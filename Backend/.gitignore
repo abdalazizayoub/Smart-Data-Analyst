@@ -1,5 +1,13 @@
+# Environment
 .env
-.db
+.env.local
+.env.production
+*.env
+
+# Database
+*.db
+*.sqlite
+
+# Python
 __pycache__/
-*.pyc
-instance/
+*.py[cod]
