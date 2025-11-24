@@ -4,15 +4,14 @@ import os
 import sys
 from dotenv import load_dotenv
 from database import get_connection,create_db
+
 load_dotenv()
 
 create_db()
-conn, cursor = get_connection()
-
 
 def upload_file_to_s3(bucket = "smart-da-bucket",file_conetnt = None,filename=None):
     try:
-
+        conn, cursor = get_connection()
         boto3_session = boto3.Session(
                 aws_access_key_id=os.getenv("access_key_id"),  
             aws_secret_access_key=os.getenv("secret_access_key"),  
@@ -26,9 +25,10 @@ def upload_file_to_s3(bucket = "smart-da-bucket",file_conetnt = None,filename=No
         res = result.get('ResponseMetadata')
         if res.get('HTTPStatusCode') == 200:
             s3_uri = f"s3://{bucket}/{filename}.csv"
-            cursor.executemany(
-                "INSERT INTO Datasets (dataset_name, dataset_file) VALUES (?, ?)",(filename,s3_uri)
-                )
+            cursor.execute(
+                "INSERT INTO Datasets (dataset_name, dataset_file) VALUES (?, ?)",
+                (filename, s3_uri) 
+            )
             conn.commit()
             
 
@@ -53,7 +53,6 @@ def save_dataset_in_s3(dataset_name,file:UploadFile):
         return result
        
         
-        file_path_in_s3 = s3.object("smart-dat-bucket" ,f"{dataset_name}.csv")
 
     except Exception as e:
         raise HTTPException(status_code=500,detail="couldnot save the dataset")
