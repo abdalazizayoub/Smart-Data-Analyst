@@ -1,0 +1,7 @@
+sqlite3
+fastapi
+boto3
+dotenv
+pandas 
+io
+google-generative-ai
