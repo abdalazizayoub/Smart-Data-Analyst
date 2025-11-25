@@ -6,16 +6,16 @@ from database import get_connection,create_db
 from io import BytesIO
 import pandas as pd
 from google import genai
+from google.genai import types
 
 
 load_dotenv()
-
 create_db()
 
 google_client = genai.Client()
 
 # Function to upload file to s3 and store metadata in sqlite
-def upload_file_to_s3(bucket = "smart-da-bucket",file_conetnt = None,filename=None):
+def upload_file_to_s3(bucket = "smart-da-bucket",file_content = None,filename=None):
     try:
         conn, cursor = get_connection()
         boto3_session = boto3.Session(
@@ -27,11 +27,17 @@ def upload_file_to_s3(bucket = "smart-da-bucket",file_conetnt = None,filename=No
         # if s3.Object(bucket, filename).load():
         #     return {"message":"File already exists in s3"}
         object= s3.Object('smart-da-bucket',f"{filename}.csv")
-        result = object.put(Body=file_conetnt)
+        result = object.put(Body=file_content)
         res = result.get('ResponseMetadata')
         if res.get('HTTPStatusCode') == 200:
-
-            return {"message":"Dataset stored succesfully","s3_uri":s3_uri}
+            try:
+                cursor.execute("INSERT INTO Datasets (dataset_name,dataset_file) VALUES (?,?) ",(filename,file_content))
+                conn.commit()
+                conn.close()    
+                return {"message":"Dataset stored succesfully"}
+            except Exception as e:
+                return {"message":"Could not store metadata in database","error":str(e)}
+           
     except Exception as e:
         return {"message":"Could not upload the file to s3","error":str(e)}
     
@@ -92,10 +98,20 @@ def generate_description(summary):
     return response.text
 
 
-
+def store_dataset_metadata(dataset_name: str, description: str = None):
+    try:
+        conn, cursor = get_connection()
+        cursor.execute(
+            "INSERT INTO Datasets (dataset_name, description) VALUES (?, ?)", 
+            (dataset_name, description)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        raise Exception(f"Could not store metadata in database: {str(e)}")
     
 app = FastAPI()
-
 @app.get("/")
 def health_check():
     return {"message":"HIII!"}
@@ -103,13 +119,70 @@ def health_check():
 @app.post("/input")
 def ingest_dataset(dataset_name,file:UploadFile):
     try:
+        conn,cursor = get_connection()
+    except Exception as e :
+        raise HTTPException(status_code=503, detail="Could not connect to the database")
+    
+    try:
         contents = file.file.read()
-        dataset_summary = get_dataset_description(dataset_name=dataset_name,data=contents)
-        ingestion_result = upload_file_to_s3(file_conetnt=contents,filename=dataset_name)
+        conn, cursor = get_connection()
+
+        # Check if dataset name already exists
+        cursor.execute("SELECT * FROM Datasets WHERE dataset_name = ?", (dataset_name,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Dataset name already exists")
+        
+        dataset_summary = get_dataset_description(dataset_name=dataset_name, data=contents)
+        
+        if "error" in dataset_summary:
+            raise HTTPException(status_code=400, detail=dataset_summary["error"])
+        
+        # Upload to S3
+        s3_success = upload_file_to_s3(
+            file_content=contents, 
+            filename=dataset_name
+        )
+        if not s3_success:
+            raise HTTPException(status_code=500, detail="Failed to upload file to S3")
+        
         dataset_description = generate_description(dataset_summary)
-        return   ingestion_result ,dataset_summary, dataset_description
-       
+        
+        store_dataset_metadata(
+            dataset_name=dataset_name,
+            description=dataset_description
+        )
+        
+        return {
+            "message": "Dataset stored successfully",
+            "dataset_name": dataset_name,
+            "description": dataset_description
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500,detail=f" Couldnot save the dataset ,{str(e)}")
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Could not save the dataset: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+       
 
 
+@app.get("/datasets")
+def list_datasets():
+    try:
+        conn, cursor = get_connection()
+        cursor.execute("SELECT dataset_name, description FROM Datasets")
+        datasets = cursor.fetchall()
+        conn.close()
+        
+        dataset_list = [
+            {"dataset_name": row[0], "description": row[1]} for row in datasets
+        ]
+        
+        return {"datasets": dataset_list}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not retrieve datasets: {str(e)}")
