@@ -6,13 +6,13 @@ from database import get_connection,create_db
 from io import BytesIO
 import pandas as pd
 from google import genai
-from google.genai import types
-
+from google.genai import types 
+from nodes import feature_importance, drop_na_rows, correlation_analysis
 
 load_dotenv()
 create_db()
 
-google_client = genai.Client()
+google_client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 # Function to upload file to s3 and store metadata in sqlite
 def upload_file_to_s3(bucket = "smart-da-bucket",file_content = None,filename=None):
@@ -29,9 +29,10 @@ def upload_file_to_s3(bucket = "smart-da-bucket",file_content = None,filename=No
         object= s3.Object('smart-da-bucket',f"{filename}.csv")
         result = object.put(Body=file_content)
         res = result.get('ResponseMetadata')
+        dataset_uri = f"s3://{bucket}/{filename}.csv"
         if res.get('HTTPStatusCode') == 200:
             try:
-                cursor.execute("INSERT INTO Datasets (dataset_name,dataset_file) VALUES (?,?) ",(filename,file_content))
+                cursor.execute("INSERT INTO Datasets (dataset_name,dataset_file) VALUES (?,?) ",(filename,dataset_uri))
                 conn.commit()
                 conn.close()    
                 return {"message":"Dataset stored succesfully"}
@@ -186,3 +187,148 @@ def list_datasets():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not retrieve datasets: {str(e)}")
+    
+@app.post("/drop-na-rows")
+def drop_na_rows_endpoint(dataset_name: str):
+    try:
+        conn, cursor = get_connection()
+        cursor.execute("SELECT dataset_file FROM Datasets WHERE dataset_name = ?", (dataset_name,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        dataset_uri = result[0]
+        
+        # Download dataset from S3
+        boto3_session = boto3.Session(
+                aws_access_key_id=os.getenv("access_key_id"),  
+            aws_secret_access_key=os.getenv("secret_access_key"),  
+            region_name="eu-central-1")
+        s3 = boto3_session.client('s3')
+        
+        bucket_name, key = dataset_uri.replace("s3://", "").split("/", 1)
+        s3_object = s3.get_object(Bucket=bucket_name, Key=key)
+        data = s3_object['Body'].read()
+        
+        df = pd.read_csv(BytesIO(data))
+        
+        cleaned_df = drop_na_rows(df)
+        
+        return {
+            "original_shape": {"rows": int(len(df)), "columns": int(len(df.columns))},
+            "cleaned_shape": {"rows": int(len(cleaned_df)), "columns": int(len(cleaned_df.columns))}
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing drop NA rows: {str(e)}")
+    
+    
+@app.post("/feature-importance")
+def feature_importance_endpoint(dataset_name: str, target_column: str, task_type: str):
+    try:
+        conn, cursor = get_connection()
+        cursor.execute("SELECT dataset_file FROM Datasets WHERE dataset_name = ?", (dataset_name,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        dataset_uri = result[0]
+        
+        # Download dataset from S3
+        boto3_session = boto3.Session(
+                aws_access_key_id=os.getenv("access_key_id"),  
+            aws_secret_access_key=os.getenv("secret_access_key"),  
+            region_name="eu-central-1")
+        s3 = boto3_session.client('s3')
+        
+        bucket_name, key = dataset_uri.replace("s3://", "").split("/", 1)
+        s3_object = s3.get_object(Bucket=bucket_name, Key=key)
+        data = s3_object['Body'].read()
+        
+        df = pd.read_csv(BytesIO(data))
+        
+        results = feature_importance(
+            df=df,
+            class_label=target_column,
+            test_size=0.2,
+            task_type=task_type  
+        )
+        
+        if 'error' in results:
+            raise HTTPException(status_code=400, detail=results['error'])
+        
+        return {
+            "task_type": results['task_type'],
+            "test_score": results['test_score'],
+            "importance": results['importance'].to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing feature importance: {str(e)}")
+    
+    
+@app.post("/correlation-analysis")
+def correlation_analysis_endpoint(dataset_name: str):
+    try:
+        conn, cursor = get_connection()
+        cursor.execute("SELECT dataset_file FROM Datasets WHERE dataset_name = ?", (dataset_name,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        dataset_uri = result[0]
+        
+        # Download dataset from S3
+        boto3_session = boto3.Session(
+                aws_access_key_id=os.getenv("access_key_id"),  
+            aws_secret_access_key=os.getenv("secret_access_key"),  
+            region_name="eu-central-1")
+        s3 = boto3_session.client('s3')
+        
+        bucket_name, key = dataset_uri.replace("s3://", "").split("/", 1)
+        s3_object = s3.get_object(Bucket=bucket_name, Key=key)
+        data = s3_object['Body'].read()
+        
+        df = pd.read_csv(BytesIO(data))
+        
+        corr_matrix = correlation_analysis(df)
+        
+        return {
+            "correlation_matrix": corr_matrix.to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing correlation analysis: {str(e)}")
+
+
+
+@app.get("dataset/{dataset_name}")
+def get_dataset_details(dataset_name: str): 
+    try:
+        conn, cursor = get_connection()
+        cursor.execute("SELECT dataset_name, description FROM Datasets WHERE dataset_name = ?", (dataset_name,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        return {
+            "dataset_name": result[0],
+            "description": result[1]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not retrieve dataset details: {str(e)}")
