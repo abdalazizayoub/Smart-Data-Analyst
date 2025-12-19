@@ -7,8 +7,8 @@ from io import BytesIO
 import pandas as pd
 from google import genai
 from google.genai import types 
-from nodes import feature_importance, drop_na_rows, correlation_analysis
-
+from nodes import feature_importance, drop_na_rows, correlation_analysis, get_dataset_description
+from llm_client import generate_description
 load_dotenv()
 create_db()
 
@@ -41,78 +41,31 @@ def upload_file_to_s3(bucket = "smart-da-bucket",file_content = None,filename=No
            
     except Exception as e:
         return {"message":"Could not upload the file to s3","error":str(e)}
-    
-# Function to generate dataset description
-def get_dataset_description(dataset_name ,data):
-    try:
-        df = pd.read_csv(BytesIO(data))
-        columns = [str(col) for col in df.columns]
-        
-        # Separate numeric and non-numeric columns
-        numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
-        text_columns = df.select_dtypes(include=['object']).columns.tolist()
-        
-        # Generate summary for numeric columns only
-        numeric_summary = {}
-        if numeric_columns:
-            numeric_df = df[numeric_columns]
-            summary_df = numeric_df.describe()
-            
-            for column in summary_df.columns:
-                numeric_summary[str(column)] = {
-                    str(stat): float(value) if pd.notna(value) else None
-                    for stat, value in summary_df[column].items()
-                }
-        
-        text_summary = {}
-        for col in text_columns:
-            text_summary[str(col)] = {
-                "count": int(df[col].count()),
-                "unique_values_list": df[col].dropna().unique().tolist(),
-                "top_value": str(df[col].mode().iloc[0]) if not df[col].mode().empty else None,  
-                                }
-        
-        return {
-            "Dataset Name": dataset_name,
-            "columns": columns,
-            "numeric_columns": numeric_columns,
-            "text_columns": text_columns,
-            "numeric_summary": numeric_summary,
-            "text_summary": text_summary,
-            "dataset_shape": {
-                "rows": int(len(df)),
-                "columns": int(len(df.columns))
-            }
-        }
-        
-    except Exception as e:
-        return {"error": f"Failed to generate description: {str(e)}"}
-    
-# LLM to generate non-technical description
-def generate_description(summary):
-    response = google_client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            config=types.GenerateContentConfig(
-                                        system_instruction="You are an expert Data Anaylst. Your name is Mo."),
-                                        contents=f"generate a non-technical description given this dataset summary:{summary}"
-                        )
-    return response.text
+  
 
-
-def store_dataset_metadata(dataset_name: str, description: str = None):
+def store_dataset_metadata(dataset_name: str, description: str = None, summary:str = None):
     try:
         conn, cursor = get_connection()
         cursor.execute(
-            "INSERT INTO Datasets (dataset_name, description) VALUES (?, ?)", 
-            (dataset_name, description)
+            "INSERT INTO Datasets (dataset_name, description,dataset_summary) VALUES (?, ?,?)", 
+            (dataset_name, description,summary)
         )
         conn.commit()
         conn.close()
         return True
     except Exception as e:
         raise Exception(f"Could not store metadata in database: {str(e)}")
-    
+#-------------------------------------backend Logic ---------------------------------------------------------------------------------
 app = FastAPI()
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/")
 def health_check():
     return {"message":"HIII!"}
@@ -332,3 +285,16 @@ def get_dataset_details(dataset_name: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not retrieve dataset details: {str(e)}")
+    
+    
+@app.get("/podcast/{dataset_name}")
+def generate_podcate(dataset_name:str):
+    try:    
+        conn,cursor = get_connection()
+        cursor.execute("Select dataset_name, description,summary FROM Datasets WHERE dataset_name = ?", (dataset_name,))
+        result = cursor.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Could not connect to the database: {str(e)}")
+    
+        
+    
