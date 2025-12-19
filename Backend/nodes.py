@@ -9,6 +9,53 @@ import seaborn as sns
 
 df = pd.read_csv(r"c:\Users\user\Downloads\archive(1)\house_price_regression_dataset.csv")
 
+
+  
+# Function to generate dataset description
+def get_dataset_description(dataset_name ,data):
+    try:
+        df = pd.read_csv(BytesIO(data))
+        columns = [str(col) for col in df.columns]
+        
+        # Separate numeric and non-numeric columns
+        numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+        text_columns = df.select_dtypes(include=['object']).columns.tolist()
+        
+        # Generate summary for numeric columns only
+        numeric_summary = {}
+        if numeric_columns:
+            numeric_df = df[numeric_columns]
+            summary_df = numeric_df.describe()
+            
+            for column in summary_df.columns:
+                numeric_summary[str(column)] = {
+                    str(stat): float(value) if pd.notna(value) else None
+                    for stat, value in summary_df[column].items()
+                }
+        
+        text_summary = {}
+        for col in text_columns:
+            text_summary[str(col)] = {
+                "count": int(df[col].count()),
+                "unique_values_list": df[col].dropna().unique().tolist(),
+                "top_value": str(df[col].mode().iloc[0]) if not df[col].mode().empty else None,  
+                                }
+        
+        return {
+            "Dataset Name": dataset_name,
+            "columns": columns,
+            "numeric_columns": numeric_columns,
+            "text_columns": text_columns,
+            "numeric_summary": numeric_summary,
+            "text_summary": text_summary,
+            "dataset_shape": {
+                "rows": int(len(df)),
+                "columns": int(len(df.columns))
+            }
+        }
+        
+    except Exception as e:
+        return {"error": f"Failed to generate description: {str(e)}"}
 #removes any row with NA data
 def drop_na_rows(df:pd.DataFrame):
     df = df.copy()
@@ -627,3 +674,4 @@ print(f"heatmap:{_.show()}")
 print("-"*50)
 print(f"feature_importance :{imp}")
 print(test_1["House_Price"].dtypes)
+
