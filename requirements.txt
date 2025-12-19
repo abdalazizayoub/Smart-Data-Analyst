@@ -1,7 +1,10 @@
-sqlite3
 fastapi
+uvicorn[standard]
 boto3
-dotenv
-pandas 
-io
-google-generative-ai
+python-dotenv
+pandas
+google-generativeai
+scikit-learn 
+numpy      
+matplotlib
+seaborn
